@@ -1,0 +1,96 @@
+---
+title: "NARFD example"
+subtitle: "Using artificial data"
+output: html_document
+---
+
+```{r}
+#install.packages(c("nloptr", "splines", "pbs", "refund", "NNLM", "dplyr", "tidyr", "data.table", "glmnet", "mgcv", "tibble"))
+
+install.packages("NNLM")
+library(devtools)
+install_github('linxihui/NNLM')
+```
+```{r setup, include=FALSE}
+source(here::here("source", "NARFD.R"))
+
+library(tidyverse)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+This document includes a brief illustration of the NARFD method for "artificial" simulated data, generated using sine and cosine functional prototypes in a way that is similar to the full simulation exercise in the manuscript. 
+
+## Example data
+
+Observations are included in `./data/artificial_example.csv`. These data are imported and plotted in the code chunk below.
+
+```{r}
+artificial_df = 
+  read_csv(here::here("data", "artificial_example.csv"))
+
+artificial_df %>% 
+  ggplot(aes(x = .index, y = .observed, group = .id)) +
+  geom_line()
+```
+
+These were generated using the code in the next chunk and exported to a csv file. The `Simulate()` function produces a list that includes observed data as well as true prototypes, scores, and latent means. The `MakeLong()` function extracts only observed data and converts this to a long-form dataframe suitable for fitting. 
+
+```{r, eval = FALSE}
+source(here::here("source", "Simulate_Data.R"))
+set.seed(1)
+
+artificial_data <- Simulate(N = 20, D = 80, type = "NARFD", seed = 1)
+
+dim(artificial_data$observations)
+artificial_df <- MakeLong(artificial_data$observations)
+```
+
+## Fit NARFD
+
+Next we fit the proposed method using the `NARFD()` function and a pre-specified penalty sequence. In other settings, a wider range of potential penalty terms and larger number of CV folds may be more appropriate.
+
+```{r}
+penalty.seq <- c(0.1, 1, 10)
+
+narfd_results <- 
+  NARFD(long = artificial_df, npc = 2, D = 80, type = "NARFD", nbasis = 20,
+        periodic = FALSE, folds = 3, iter = 25, penalty.seq = penalty.seq)
+```
+
+The plot below shows estimated functional prototypes.
+
+```{r}
+narfd_results$prototypes %>% 
+  ggplot(aes(x = .index, y = Value, col = prototype)) + 
+  geom_line() + 
+  xlab("Time index")
+```
+
+Finally we show the observed data and fitted value for one subject.
+
+```{r}
+narfd_results$pred %>% 
+  filter(.id == "IV1") %>% 
+  ggplot(aes(x = .index, y = .pred)) + 
+  geom_line() + 
+  geom_point(aes(y = .observed)) +
+  xlab("Time index")
+```
+

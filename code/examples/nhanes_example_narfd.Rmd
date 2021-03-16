@@ -1,0 +1,194 @@
+---
+title: "nhanes_example_narfd"
+author: "Bohan Wu"
+date: "3/8/2021"
+output: html_document
+---
+
+---
+title: "Poisson FPCA example"
+output: html_notebook
+---
+```{r}
+rm(list = ls())
+```
+```{r}
+#install.packages(c("nloptr", "splines", "pbs", "refund", "dplyr", "tidyr", "data.table", "glmnet", "mgcv", "tibble"))
+
+#library(devtools)
+#install_github('linxihui/NNLM')
+pckgs <- c("tableone","knitr","kableExtra", "devtools","magrittr","dplyr", "survey", "mgcv","refund","rnhanesdata")
+
+sapply(pckgs, function(x) if(!require(x,character.only=TRUE,quietly=TRUE)) {
+    #install.packages(x)
+    require(x, character.only=TRUE)
+})
+rm(list=c("pckgs"))
+```
+```{r setup, include=FALSE}
+source(here::here("source", "Simulate_Data.R"))
+source(here::here("source", "NARFD.R"))
+
+library(tidyverse)
+library(reshape2)
+knitr::opts_chunk$set(
+#	echo = TRUE,
+  cache=FALSE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+This document includes a brief demonstration of the Poisson FPCA method for preprocessed "Nhanes" activity count data aggregated in 5-min intervals. The data was generated using methods included in the file "process_nhanes_data.R". 
+
+## Example data
+
+Observations are included in `./data/pa_nhanes_5min.RData`. These data are imported and plotted in the code chunk below.
+
+```{r}
+nhanes_df = 
+  load(here::here("data", "pa_nhanes_5min2.RData"))
+
+colnames(Y) <- seq(ncol(Y))
+Y__m = melt(Y) %>% 
+  dplyr::rename(.id = Var1, .index = Var2, .observed = value)%>%
+  mutate(.id = as.factor(.id))
+
+Y__m %>% 
+  ggplot(aes(x = .index, y = .observed, group = .id)) +
+  geom_line()
+```
+## Fit NARFD
+
+Next we fit the proposed method using the `NARFD()` function and a pre-specified penalty sequence. In other settings, a wider range of potential penalty terms and larger number of CV folds may be more appropriate.
+
+```{r}
+Y.l<- MakeLong(t(Y))
+penalty.seq <- 2 ^ c(-3, 1, 3,5)
+
+
+narfd_results <- NARFD(long = Y.l, npc = 5, nbasis = 25, D = ncol(Y), type = "NARFD", periodic = FALSE, folds = 3, iter = 25,  penalty.seq = penalty.seq, verbose = TRUE)
+
+```
+
+The plot below shows estimated functional prototypes.
+
+```{r}
+print(paste("optimal penalty = ",narfd_results$penalty))
+narfd_results$prototypes %>% 
+  ggplot(aes(x = .index, y = Value)) + 
+  geom_line() + 
+  facet_grid(~prototype) + 
+  xlab("Time index")+
+  ggtitle("NARFD Function Prototypes(Basis)")
+```
+
+Lastly we show the observed data and fitted value for one activity curve. 
+
+```{r}
+n_samples = 4
+samples = sample(unique(narfd_results$pred$.id),n_samples)
+p = vector("list",n_samples)
+for(i in seq(n_samples)){
+  dd =   narfd_results$pred %>% 
+  filter(.id == samples[i])
+ p[[i]] =(ggplot(data = dd, aes(x = .index, y = .pred)) + 
+  geom_line() + 
+  geom_point(aes(y = .observed)) +
+  xlab("Time index"))+
+   ggtitle(str_replace(samples[i],"IV","Subject "))
+}
+
+multiplot(p[[1]],p[[2]],p[[3]],p[[4]], cols=2)
+```
+
+```{r}
+# Save the results:
+#save(narfd_results, file = 'NARFD_results.RData')
+
+```
+#Prediction
+```{r}
+load(here::here("data", "NARFD_results.RData"))
+```
+## Score Dataframe
+```{r}
+scores_m = reshape2::dcast(narfd_results$scores, .id ~ prototype,value.var = "Value") %>% column_to_rownames(".id")%>% apply(MARGIN = 2, FUN = scale)
+colnames(scores_m) = paste0("score",seq(6))
+```
+##Rename Some Variables
+```{r}
+colnames(X)[2:7] = paste0("wk_day_",seq(2,7))
+
+colnames(X)[-seq(1,ncol(X) - 3)] = c("Chol_HDL", "Chol_tot","Blood_Pressure")
+
+colnames(X)[14:15] = c("HS", "Above_HS")
+
+colnames(X)[1] = "Intercept"
+```
+##Merging X with Scores, PSU, STRATA,Weights, mortstat
+```{r}
+table_dat <- X_df <- cbind(X,scores_m) %>% as.data.frame() %>% 
+  mutate(SEQN = seqn)%>%
+  inner_join(Covariate_D[,c("SEQN","SDMVPSU","SDMVSTRA","WTMEC2YR")],by = "SEQN")%>% #join with PSU, STRATA, Examination Weights
+  inner_join(Mortality_2011_D %>% 
+  filter(SEQN %in% seqn) %>% 
+  select(SEQN, mortstat), by = "SEQN")  #join with mortality stats
+
+```
+## Create a svydesign() object for
+```{r}
+X_svy <- svydesign(id= ~SDMVPSU, strata = ~SDMVSTRA, weights = ~WTMEC2YR, data = X_df, nest = TRUE)
+```
+##AIC Selection
+```{r}
+ind_vars  <- paste0("score",seq(6))
+inc_vars  <- colnames(X)
+exc_vars <- ind_vars
+aic_vec  <- var_vec <- model_vec <- rep(NA, length(ind_vars))
+for(i in 1:length(ind_vars)){
+    aic_ij  <- rep(NA,length(exc_vars))
+
+    for(k in 1:length(exc_vars)){
+        form    <- paste0(c(inc_vars, exc_vars[-k]), collapse="+")
+        fit_tmp <- svyglm(as.formula(paste("mortstat ~", form)), design=X_svy,family=binomial())
+        aic_ij[k] <- fit_tmp$aic
+
+        rm(list=c("fit_tmp","form"))
+    }
+
+    k_cur         <- which(aic_ij == min(aic_ij))
+    model_vec[i]  <- paste0(c(inc_vars, exc_vars[-k_cur]), collapse="+")
+    exc_vars      <- exc_vars[-k_cur]
+    aic_vec[i]    <- aic_ij[k_cur]
+    rm(list=c("k_cur","aic_ij","k"))
+}
+## get the final model as the first model where AIC increases after removing a variable
+## identified mi1, si1, si5, si6
+(backward_model <- model_vec[which(diff(aic_vec) > 0) + 1][1])
+if(is.na(backward_model)){
+  backward_model = model_vec[1][1]
+}
+rm(list = c("X_df", "score_m","n_samples","samples","p"))
+```
+```{r}
+fit_logistic_pca <- svyglm(as.formula(paste("mortstat ~", backward_model)), design=X_svy,  family=binomial())
+summary(fit_logistic_pca)
+SE(fit_logistic_pca)
+glmnet()
+```
+
+## estimating complex survey generalized linear models.
+## Here we use the adjusted (re-weighted) 4-year normalized survey weights.
