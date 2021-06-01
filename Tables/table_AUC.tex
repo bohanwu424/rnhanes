@@ -1,0 +1,16 @@
+\begin{table}[th]
+    \caption{AUC scores for out-of-sample mortality prediction}
+\label{tab:2}
+\centering
+\begin{tabular}[t]{lllll}
+\toprule
+Model & GFPCA & NARFD & PFPCA &Baseline (no FPCA scores)\\
+\midrule
+\cellcolor{gray!6}{AdaBoost} & \cellcolor{gray!6}{0.717} & \cellcolor{gray!6}{0.744} & \cellcolor{gray!6}{0.754}&
+\cellcolor{gray!6}{0.729}\\
+Logistic & 0.555 & 0.554 & 0.538 &0.555\\
+\cellcolor{gray!6}{Random Forest} & \cellcolor{gray!6}{0.724} & \cellcolor{gray!6}{0.703} & \cellcolor{gray!6}{0.722}&
+\cellcolor{gray!6}{0.733}\\
+\bottomrule
+\end{tabular}
+\end{table}
