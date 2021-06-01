@@ -1,0 +1,112 @@
+---
+title: "Nhanes Graphical Model Example"
+author: "Bohan Wu"
+date: "3/17/2021"
+output: pdf_document
+---
+---
+title: "Nhanes Graphical Examples"
+output: html_notebook
+---
+
+The following analysis is inspired by Eunho Yang et.al 2015. In particular, we will use Mixed Graphical Models(MGM) to investigate the dependency structure between Nhanes covariates. 
+
+```{r}
+#install.packages(c("mgm", "refund", "dplyr",  "tidyr", "data.table", "glmnet", "mgcv", "tibble"))
+```
+```{r}
+rm(list=ls())
+library(mgm)
+library(qgraph)
+source(here::here("source", "Helper Functions.R"))
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+## Example data
+```{r}
+load(here::here("data", "pa_nhanes_5min2.RData"))
+load(here::here("data", "PFPCA_results.RData"))
+
+scores_m <- pfpca_results$scores
+colnames(scores_m) <- paste0("PFPCA score ",seq(ncol(scores_m)))
+
+```
+### Combine Mortality and Predictors
+```{r}
+#Include SEQN
+X2 = as.data.frame(X) %>% mutate(SEQN = seqn, svywt = svywt)
+
+score_df = as.data.frame(apply(scores_m,2,scale))%>% mutate(SEQN = seqn)
+
+#Combine df, Tidy
+X_e = X2 %>% 
+  inner_join(score_df, by = "SEQN") 
+
+X_e[,c("n_wkday","n_wkend","DrinksPerWeek","`HDL Cholesterol`","`Total Cholesterol`","`Systolic Blood Pressure`")] =  apply(X_e[,c("n_wkday","n_wkend","DrinksPerWeek","`HDL Cholesterol`","`Total Cholesterol`","`Systolic Blood Pressure`")],2,as.integer)
+
+svywt <- X_e$svywt
+
+```
+
+#Tidy
+```{r}
+X_e <-select(X_e,-c("(Intercept)","SEQN","svywt"))
+ # gsub("factor","week_day_",names(X_e))
+names(X_e) <- gsub("n_wk", "Recorded number \n of week", names(X_e))
+names(X_e) <- gsub("CHD", "Coronary heart \n disease", names(X_e))
+names(X_e) <- gsub("CHF", "Congestive heart \n failure", names(X_e))
+names(X_e) <- gsub("Yes", ":Yes", names(X_e))
+names(X_e) <- gsub("SmokeCigsFormer", "Former smoker", names(X_e))
+names(X_e) <- gsub("SmokeCigsCurrent", "Current smoker", names(X_e))
+
+```
+
+#Type of Covariates, Level of Covariates(1 if Cts)
+```{r}
+str(X_e)
+type_e = c( rep("p", 2), #wkday/end
+           "g", #BMI
+           rep("c",4), #race and gender
+           "g",rep("c",2), #education
+           "p",rep("c",7), #health status
+           rep("g",3), #chol and blood pressure
+           rep("g",6) #scores
+        ) #mortality
+
+levels_e = array(1,dim = length(type_e))
+levels_e[which(type_e == "c")] = apply(X_e[,which(type_e == "c")],2,function(x)length(unique(as.factor(x))))
+```
+# 1) Fit Pairwise MGM
+```{r}
+#call mgm()
+fit_k2 = mgm(data = X_e, 
+              type = type_e,
+              level = levels_e,
+              k  = 2,lambdaSel = "CV",lambdaFolds = 10,weights = svywt, binarySign = TRUE)
+
+
+# Visualize using qgraph()
+jpeg(file.path("../plots","covariate_graph.jpeg"),height=900,width=1350,quality = 100)
+qgraph(fit_k2$pairwise$wadj,
+       edge.color = fit_k2$pairwise$edgecolor,
+       layout = "spring" ,
+       labels =  colnames(X_e) ,label.fill.vertical = 1, label.fill.horizontal = 1,label.cex = 1.5)
+
+dev.off()
+```
